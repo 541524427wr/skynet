@@ -2,6 +2,7 @@ local skynet = require "skynet"
 local service = require "skynet.service"
 local core = require "skynet.sharetable.core"
 local is_sharedtable = core.is_sharedtable
+local stackvalues = core.stackvalues
 
 local function sharetable_service()
 	local skynet = require "skynet"
@@ -257,12 +258,12 @@ local function resolve_replace(replace_map)
 
     local function match_value(v)
         assert(v ~= nil)
-        local tv = type(v)
-        local f = match[tv]
         if record_map[v] or is_sharedtable(v) then
             return
         end
 
+        local tv = type(v)
+        local f = match[tv]
         if f then
             record_map[v] = true
             f(v)
@@ -270,26 +271,65 @@ local function resolve_replace(replace_map)
     end
 
     local function match_mt(v)
-        local mt = getmetatable(v)
+        local mt = debug.getmetatable(v)
         if mt then
             local nv = replace_map[mt]
             if nv then
                 nv = getnv(mt)
-                setmetatable(t, nv)
+                debug.setmetatable(v, nv)
             else
                 match_value(mt)
             end
         end
     end
 
+    local function match_internmt()
+        local internal_types = {
+            pointer = debug.upvalueid(getnv, 1),
+            boolean = false,
+            str = "",
+            number = 42,
+            thread = coroutine.running(),
+            func = getnv,
+        }
+        for _,v in pairs(internal_types) do
+            match_mt(v)
+        end
+        match_mt(nil)
+    end
+
+
     local function match_table(t)
+        local keys = false
         for k,v in next, t do
+            local tk = type(k)
+            if match[tk] then
+                keys = keys or {}
+                keys[#keys+1] = k
+            end
+
             local nv = replace_map[v]
             if nv then
                 nv = getnv(v)
                 rawset(t, k, nv)
             else
                 match_value(v)
+            end
+        end
+
+        if keys then
+            for _, old_k in ipairs(keys) do
+                local new_k = replace_map[old_k]
+                if new_k then
+                    local value = rawget(t, old_k)
+                    new_k = getnv(old_k)
+                    rawset(t, old_k, nil)
+                    if new_k then
+                        rawset(t, new_k, value)
+                    end
+                else
+                    match_value(old_k)
+                end
             end
         end
         match_mt(t)
@@ -320,7 +360,7 @@ local function resolve_replace(replace_map)
         end
 
         local level = info.level
-        local curco = info.curco or coroutine.running()
+        local curco = info.curco
         if not level then
             return
         end
@@ -345,8 +385,17 @@ local function resolve_replace(replace_map)
         match_funcinfo(info)
     end
 
-    local function match_thread(co)
-        local level = 1
+    local stack_values_tmp = {}
+    local function match_thread(co, level)
+        -- match stackvalues
+        local n = stackvalues(co, stack_values_tmp)
+        for i=1,n do
+            local v = stack_values_tmp[i]
+            stack_values_tmp[i] = nil
+            match_value(v)
+        end
+
+        level = level or 1
         while true do
             local info = getinfo(co, level, "uf")
             if not info then
@@ -359,10 +408,25 @@ local function resolve_replace(replace_map)
         end
     end
 
+    local function prepare_match()
+        local co = coroutine.running()
+        record_map[co] = true
+        record_map[match] = true
+        record_map[RECORD] = true
+        record_map[record_map] = true
+        record_map[insert_replace] = true
+        record_map[resolve_replace] = true
+        assert(getinfo(co, 3, "f").func == sharetable.update)
+        match_thread(co, 5) -- ignore match_thread and match_funcinfo frame
+    end
+
     match["table"] = match_table
     match["function"] = match_function
     match["userdata"] = match_userdata
     match["thread"] = match_thread
+
+    prepare_match()
+    match_internmt()
 
     local root = debug.getregistry()
     assert(replace_map[root] == nil)
@@ -380,13 +444,15 @@ function sharetable.update(...)
 			for old_t,_ in pairs(map) do
 				if old_t ~= new_t then
 					insert_replace(old_t, new_t, replace_map)
+                    map[old_t] = nil
 				end
 			end
-			RECORD[name] = nil
 		end
 	end
 
-	resolve_replace(replace_map)
+    if next(replace_map) then
+	   resolve_replace(replace_map)
+    end
 end
 
 return sharetable

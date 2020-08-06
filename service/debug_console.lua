@@ -148,6 +148,7 @@ function COMMAND.help()
 		clearcache = "clear lua code cache",
 		service = "List unique service",
 		task = "task address : show service task detail",
+		uniqtask = "task address : show service unique task detail",
 		inject = "inject address luascript.lua",
 		logon = "logon address",
 		logoff = "logoff address",
@@ -155,6 +156,7 @@ function COMMAND.help()
 		debug = "debug address : debug a lua service",
 		signal = "signal address sig",
 		cmem = "Show C memory info",
+		jmem = "Show jemalloc mem stats",
 		ping = "ping address",
 		call = "call address ...",
 		trace = "trace address [proto] [on|off]",
@@ -262,6 +264,11 @@ function COMMAND.task(address)
 	return skynet.call(address,"debug","TASK")
 end
 
+function COMMAND.uniqtask(address)
+	address = adjust_address(address)
+	return skynet.call(address,"debug","UNIQTASK")
+end
+
 function COMMAND.info(address, ...)
 	address = adjust_address(address)
 	return skynet.call(address,"debug","INFO", ...)
@@ -333,6 +340,15 @@ function COMMAND.cmem()
 	tmp.total = memory.total()
 	tmp.block = memory.block()
 
+	return tmp
+end
+
+function COMMAND.jmem()
+	local info = memory.jestat()
+	local tmp = {}
+	for k,v in pairs(info) do
+		tmp[k] = string.format("%11d  %8.2f Mb", v, v/1048576)
+	end
 	return tmp
 end
 
